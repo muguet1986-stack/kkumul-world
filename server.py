@@ -9,8 +9,8 @@ def item(x=None,y=None):return {'x':x if x is not None else random.uniform(50,WO
 def dist2(a,b):return (a['x']-b['x'])**2+(a['y']-b['y'])**2
 def radius(p):return 8+min(10,(p['score']//100)*.6)
 def make_player(name,color):
- x=random.uniform(300,WORLD-300);y=random.uniform(300,WORLD-300);angle=random.random()*math.tau
- return {'x':x,'y':y,'angle':angle,'target':angle,'color':color,'name':name,'trail':[{'x':x-i*5*math.cos(angle),'y':y-i*5*math.sin(angle)} for i in range(30)],'length':145.,'score':0,'alive':True,'inventory':[],'effects':{k:0 for k in TYPES if k!='grow'},'deadReason':'','boosting':False,'speed':160}
+ x=random.uniform(500,WORLD-500);y=random.uniform(500,WORLD-500);angle=math.atan2(WORLD/2-y,WORLD/2-x)+random.uniform(-.65,.65)
+ return {'x':x,'y':y,'angle':angle,'target':angle,'color':color,'name':name,'trail':[{'x':x-i*5*math.cos(angle),'y':y-i*5*math.sin(angle)} for i in range(30)],'length':145.,'score':0,'alive':True,'inventory':[],'effects':{k:0 for k in TYPES if k!='grow'},'deadReason':'','boosting':False,'speed':160,'survival':0.}
 def new_room():return {'players':{},'foods':[food() for _ in range(680)],'items':[item() for _ in range(35)],'last':time.monotonic()}
 def project(p,a,b):
  dx=b['x']-a['x'];dy=b['y']-a['y'];d=dx*dx+dy*dy;t=max(0,min(1,((p['x']-a['x'])*dx+(p['y']-a['y'])*dy)/d)) if d else 0
@@ -19,6 +19,7 @@ def step(room,dt):
  players=room['players'];foods=room['foods'];items=room['items']
  for p in list(players.values()):
   if not p['alive']:continue
+  p['survival']+=dt
   for k in p['effects']:p['effects'][k]=max(0,p['effects'][k]-dt)
   d=(p['target']-p['angle']+math.pi)%math.tau-math.pi;p['angle']+=max(-4.5*dt,min(4.5*dt,d));slow=any(q is not p and q['alive'] and q['effects']['slow']>0 for q in players.values())
   speed=160*(1.55 if p['effects']['speed'] else 1)*(.55 if slow else 1);p['x']+=math.cos(p['angle'])*speed*dt;p['y']+=math.sin(p['angle'])*speed*dt;p['boosting']=p['effects']['speed']>0
@@ -61,13 +62,14 @@ async def broadcast_loop(app):
    for pid,p in list(room['players'].items()):
     ws=app['sockets'].get(pid)
     if not ws or ws.closed:continue
-    msg={'type':'state','players':players,'foods':room['foods'],'items':room['items'],'inventory':p['inventory'],'effects':p['effects'],'alive':p['alive'],'reason':p['deadReason'],'rank':next((i+1 for i,(x,_) in enumerate(ordered) if x==pid),1)}
+    msg={'type':'state','players':players,'foods':room['foods'],'items':room['items'],'inventory':p['inventory'],'effects':p['effects'],'alive':p['alive'],'elapsed':p['survival'],'reason':p['deadReason'],'rank':next((i+1 for i,(x,_) in enumerate(ordered) if x==pid),1)}
     try:await ws.send_str(json.dumps(msg,separators=(',',':')))
     except ConnectionError:pass
 async def socket(request):
  code=request.query.get('room','').upper();name=request.query.get('name','꼬물이').strip()[:12] or '꼬물이';color=request.query.get('color','')
  if not re.fullmatch(r'[A-Z0-9]{6}',code):raise web.HTTPBadRequest(text='잘못된 방 코드')
- ws=web.WebSocketResponse(heartbeat=20,max_msg_size=2048);await ws.prepare(request);room=rooms.setdefault(code,new_room())
+ ws=web.WebSocketResponse(heartbeat=20,max_msg_size=2048);await ws.prepare(request);room=rooms.get(code)
+ if room is None:room=rooms[code]=new_room()
  if len(room['players'])>=8:await ws.send_json({'type':'error','message':'방이 가득 찼어요. 최대 8명까지 참여할 수 있어요.'});await ws.close();return ws
  pid=secrets.token_urlsafe(12);p=make_player(name,color if color in COLORS else COLORS[0]);room['players'][pid]=p;room['last']=time.monotonic();request.app['sockets'][pid]=ws
  await ws.send_json({'type':'welcome','id':pid,'room':code})
