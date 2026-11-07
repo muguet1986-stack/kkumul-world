@@ -22,7 +22,7 @@ def step(room,dt):
   p['survival']+=dt
   for k in p['effects']:p['effects'][k]=max(0,p['effects'][k]-dt)
   d=(p['target']-p['angle']+math.pi)%math.tau-math.pi;p['angle']+=max(-4.5*dt,min(4.5*dt,d));slow=any(q is not p and q['alive'] and q['effects']['slow']>0 for q in players.values())
-  speed=160*(1.55 if p['effects']['speed'] else 1)*(.55 if slow else 1);p['x']+=math.cos(p['angle'])*speed*dt;p['y']+=math.sin(p['angle'])*speed*dt;p['boosting']=p['effects']['speed']>0
+  speed=160*(1.55 if p['effects']['speed'] else 1)*(.55 if slow else 1);p['motionSpeed']=speed;p['x']+=math.cos(p['angle'])*speed*dt;p['y']+=math.sin(p['angle'])*speed*dt;p['boosting']=p['effects']['speed']>0
   p['trail'].insert(0,{'x':p['x'],'y':p['y']});length=0
   for j in range(1,len(p['trail'])):
    a,b=p['trail'][j-1:j+1];length+=math.hypot(a['x']-b['x'],a['y']-b['y'])
