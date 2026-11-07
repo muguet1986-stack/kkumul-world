@@ -10,7 +10,7 @@ def dist2(a,b):return (a['x']-b['x'])**2+(a['y']-b['y'])**2
 def radius(p):return 8+min(10,(p['score']//100)*.6)
 def make_player(name,color):
  x=random.uniform(500,WORLD-500);y=random.uniform(500,WORLD-500);angle=math.atan2(WORLD/2-y,WORLD/2-x)+random.uniform(-.65,.65)
- return {'x':x,'y':y,'angle':angle,'target':angle,'color':color,'name':name,'trail':[{'x':x-i*5*math.cos(angle),'y':y-i*5*math.sin(angle)} for i in range(30)],'length':145.,'score':0,'alive':True,'inventory':[],'effects':{k:0 for k in TYPES if k!='grow'},'deadReason':'','boosting':False,'speed':160,'survival':0.}
+ return {'x':x,'y':y,'angle':angle,'target':angle,'color':color,'name':name,'trail':[{'x':x-i*5*math.cos(angle),'y':y-i*5*math.sin(angle)} for i in range(30)],'length':145.,'score':0,'alive':True,'inventory':[],'effects':{k:0 for k in TYPES if k!='grow'},'deadReason':'','boosting':False,'speed':160,'survival':0.,'viewW':1100,'viewH':850}
 def new_room():return {'players':{},'foods':[food() for _ in range(680)],'items':[item() for _ in range(35)],'last':time.monotonic()}
 def project(p,a,b):
  dx=b['x']-a['x'];dy=b['y']-a['y'];d=dx*dx+dy*dy;t=max(0,min(1,((p['x']-a['x'])*dx+(p['y']-a['y'])*dy)/d)) if d else 0
@@ -29,7 +29,7 @@ def step(room,dt):
    if length>p['length']:del p['trail'][j+1:];break
   if p['x']<14 or p['y']<14 or p['x']>WORLD-14 or p['y']>WORLD-14:p['alive']=False;p['deadReason']='wall';continue
   for f in foods[:]:
-   d=math.sqrt(dist2(p,f))
+   d2=dist2(p,f);d=math.sqrt(d2) if p['effects']['magnet'] and d2<145**2 else 0
    if p['effects']['magnet'] and 1<d<145:
     f['x']+=(p['x']-f['x'])/d*min(d,260*dt);f['y']+=(p['y']-f['y'])/d*min(d,260*dt)
    if dist2(p,f)<(radius(p)+5+f['r'])**2:
@@ -58,11 +58,21 @@ async def broadcast_loop(app):
     continue
    now=time.monotonic();dt=min(.1,now-room['last']);room['last']=now;step(room,dt)
    ordered=sorted(room['players'].items(),key=lambda z:z[1]['score'],reverse=True)
-   players=[{'id':pid,**{k:v for k,v in p.items() if k not in ('target','effects','inventory','dropped','deadReason')}} for pid,p in ordered]
+   players=[]
+   for pid,p in ordered:
+    wire={k:v for k,v in p.items() if k not in ('target','effects','inventory','dropped','deadReason','viewW','viewH','trail')}
+    wire['id']=pid;wire['x']=round(p['x'],1);wire['y']=round(p['y'],1);wire['angle']=round(p['angle'],3)
+    trail=p['trail'];stride=max(1,math.ceil(len(trail)/160));sample=trail[::stride]
+    if sample and sample[-1] is not trail[-1]:sample.append(trail[-1])
+    wire['trail']=[{'x':round(pt['x'],1),'y':round(pt['y'],1)} for pt in sample];players.append(wire)
+   packed_food=[{**f,'x':round(f['x'],1),'y':round(f['y'],1),'phase':round(f['phase'],2)} for f in room['foods']]
+   packed_items=[{**it,'x':round(it['x'],1),'y':round(it['y'],1)} for it in room['items']]
    for pid,p in list(room['players'].items()):
     ws=app['sockets'].get(pid)
     if not ws or ws.closed:continue
-    msg={'type':'state','players':players,'foods':room['foods'],'items':room['items'],'inventory':p['inventory'],'effects':p['effects'],'alive':p['alive'],'elapsed':p['survival'],'reason':p['deadReason'],'rank':next((i+1 for i,(x,_) in enumerate(ordered) if x==pid),1)}
+    half_w=max(400,min(2200,p['viewW']/2+260));half_h=max(400,min(2200,p['viewH']/2+260))
+    nearby=lambda obj:abs(obj['x']-p['x'])<half_w and abs(obj['y']-p['y'])<half_h
+    msg={'type':'state','players':players,'foods':[f for f in packed_food if nearby(f)],'items':[it for it in packed_items if nearby(it)],'inventory':p['inventory'],'effects':p['effects'],'alive':p['alive'],'elapsed':p['survival'],'reason':p['deadReason'],'rank':next((i+1 for i,(x,_) in enumerate(ordered) if x==pid),1)}
     try:await ws.send_str(json.dumps(msg,separators=(',',':')))
     except ConnectionError:pass
 async def socket(request):
@@ -82,6 +92,9 @@ async def socket(request):
    if data.get('type')=='aim':
     angle=data.get('angle');
     if isinstance(angle,(int,float)) and math.isfinite(angle):p['target']=angle%math.tau
+    for field,key in [('viewW','width'),('viewH','height')]:
+     size=data.get(key)
+     if isinstance(size,(int,float)) and math.isfinite(size):p[field]=max(200,min(4000,size))
    elif data.get('type')=='use' and p['alive']:
     idx=data.get('index');inv=p['inventory']
     if type(idx) is int and 0<=idx<len(inv):
