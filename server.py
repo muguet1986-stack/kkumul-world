@@ -1,10 +1,10 @@
-import asyncio, json, math, os, random, re, secrets, time
+import asyncio, itertools, json, math, os, random, re, secrets, time
 from aiohttp import web, WSMsgType
-WORLD=3400; TICK=.05; rooms={}
+WORLD=3400; TICK=.05; rooms={}; FOOD_IDS=itertools.count(1)
 COLORS=['#60e8cd','#ff81b0','#ac83ff','#5cbcff','#ffda5f','#ffa162','#ec80ff','#70ed87','#ff6d76','#58dce9','#f4a3ce','#98a7ff']
 TYPES={'shield':5,'magnet':7,'speed':4,'slow':5,'double':8,'grow':0}
 def food(x=None,y=None):
- v=random.choices([1,2,3],[70,24,6])[0];return {'x':x if x is not None else random.uniform(30,WORLD-30),'y':y if y is not None else random.uniform(30,WORLD-30),'value':v,'r':{1:3.7,2:5,3:7.1}[v],'color':random.choice(COLORS),'phase':random.random()*6.28}
+ v=random.choices([1,2,3],[70,24,6])[0];return {'id':next(FOOD_IDS),'x':x if x is not None else random.uniform(30,WORLD-30),'y':y if y is not None else random.uniform(30,WORLD-30),'value':v,'r':{1:3.7,2:5,3:7.1}[v],'color':random.choice(COLORS),'phase':random.random()*6.28}
 def item(x=None,y=None):return {'x':x if x is not None else random.uniform(50,WORLD-50),'y':y if y is not None else random.uniform(50,WORLD-50),'type':random.choice(list(TYPES))}
 def dist2(a,b):return (a['x']-b['x'])**2+(a['y']-b['y'])**2
 def radius(p):return 8+min(10,(p['score']//100)*.6)
@@ -28,12 +28,15 @@ def step(room,dt):
    a,b=p['trail'][j-1:j+1];length+=math.hypot(a['x']-b['x'],a['y']-b['y'])
    if length>p['length']:del p['trail'][j+1:];break
   if p['x']<14 or p['y']<14 or p['x']>WORLD-14 or p['y']>WORLD-14:p['alive']=False;p['deadReason']='wall';continue
-  for f in foods[:]:
-   d2=dist2(p,f);d=math.sqrt(d2) if p['effects']['magnet'] and d2<145**2 else 0
-   if p['effects']['magnet'] and 1<d<145:
-    f['x']+=(p['x']-f['x'])/d*min(d,260*dt);f['y']+=(p['y']-f['y'])/d*min(d,260*dt)
-   if dist2(p,f)<(radius(p)+5+f['r'])**2:
-    before=p['score']//100;p['score']+=f['value']*10*(2 if p['effects']['double'] else 1);p['length']+=f['value']*4.5+22*(p['score']//100-before);foods.remove(f)
+  remaining=[];magnet=p['effects']['magnet']>0
+  for f in foods:
+   dx=p['x']-f['x'];dy=p['y']-f['y'];d2=dx*dx+dy*dy
+   if magnet and 1<d2<145**2:
+    d=math.sqrt(d2);move=min(d,260*dt);f['x']+=dx/d*move;f['y']+=dy/d*move;dx=p['x']-f['x'];dy=p['y']-f['y'];d2=dx*dx+dy*dy
+   if d2<(radius(p)+5+f['r'])**2:
+    before=p['score']//100;p['score']+=f['value']*10*(2 if p['effects']['double'] else 1);p['length']+=f['value']*4.5+22*(p['score']//100-before)
+   else:remaining.append(f)
+  foods[:]=remaining
   if len(p['inventory'])<2:
    for it in items[:]:
     if dist2(p,it)<(radius(p)+17)**2:p['inventory'].append(it['type']);p['invVersion']+=1;items.remove(it);break
