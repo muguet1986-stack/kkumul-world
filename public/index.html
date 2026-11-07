@@ -197,7 +197,7 @@ function render(){renderBackground();ctx.save();ctx.translate(w/2-cam.x+(Math.ra
   for(const p of sparkles){ctx.globalAlpha=Math.max(0,p.life/p.max);ctx.fillStyle=p.color;ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,TAU);ctx.fill()}ctx.globalAlpha=1;ctx.restore();
   // 게임 종료 전에도 세계를 감상할 수 있도록 기본 배경은 계속 렌더링
 }
-function frame(t){const dt=Math.min((t-last)/1000||.016,.033);last=t;if(state==='playing'){if(multiplayer)networkUpdate(dt,t);else update(dt);}else if(state==='menu')elapsed+=dt*.25;render();requestAnimationFrame(frame)}requestAnimationFrame(frame);
+function frame(t){const dt=Math.min((t-last)/1000||.016,multiplayer?.1:.033);last=t;if(state==='playing'){if(multiplayer)networkUpdate(dt,t);else update(dt);}else if(state==='menu')elapsed+=dt*.25;render();requestAnimationFrame(frame)}requestAnimationFrame(frame);
 const selectSkin=i=>{skin=i;document.querySelectorAll('.skin').forEach((el,j)=>{el.classList.toggle('active',i===j);el.setAttribute('aria-pressed',String(i===j))})};
 palette.forEach((color,i)=>{let btn=document.createElement('button');btn.type='button';btn.className='skin';btn.setAttribute('aria-label',['민트','분홍','보라','파랑','노랑','주황','자홍','연두','코랄','하늘','로즈','라벤더'][i]);btn.style.setProperty('--skin',color);btn.addEventListener('click',()=>selectSkin(i));$('skins').appendChild(btn)});selectSkin(0);
 try{const saved=localStorage.getItem('kkumul_name');if(saved)$('nickname').value=saved}catch(e){}$('introBest').textContent=displayScore(best)+'점';
