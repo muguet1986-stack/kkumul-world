@@ -2,7 +2,7 @@ import asyncio, itertools, json, math, os, random, re, secrets, time
 from aiohttp import web, WSMsgType
 WORLD=3400; TICK=.05; rooms={}; FOOD_IDS=itertools.count(1)
 COLORS=['#60e8cd','#ff81b0','#ac83ff','#5cbcff','#ffda5f','#ffa162','#ec80ff','#70ed87','#ff6d76','#58dce9','#f4a3ce','#98a7ff']
-TYPES={'shield':5,'magnet':7,'speed':4,'slow':5,'double':8,'grow':0,'ghost':4,'shrink':6,'bomb':0}
+TYPES={'shield':5,'magnet':7,'speed':4,'slow':5,'double':8,'grow':0,'ghost':4,'shrink':6,'bomb':0,'missile':0}
 def food(x=None,y=None):
  v=random.choices([1,2,3],[70,24,6])[0];return {'id':next(FOOD_IDS),'x':x if x is not None else random.uniform(30,WORLD-30),'y':y if y is not None else random.uniform(30,WORLD-30),'value':v,'r':{1:3.7,2:5,3:7.1}[v],'color':random.choice(COLORS),'phase':random.random()*6.28}
 def item(x=None,y=None):return {'x':x if x is not None else random.uniform(50,WORLD-50),'y':y if y is not None else random.uniform(50,WORLD-50),'type':random.choice(list(TYPES))}
@@ -10,8 +10,15 @@ def dist2(a,b):return (a['x']-b['x'])**2+(a['y']-b['y'])**2
 def radius(p):return (8+min(10,(p['score']//100)*.6))*(.65 if p['effects'].get('shrink',0)>0 else 1)
 def make_player(name,color):
  x=random.uniform(500,WORLD-500);y=random.uniform(500,WORLD-500);angle=math.atan2(WORLD/2-y,WORLD/2-x)+random.uniform(-.65,.65)
- return {'x':x,'y':y,'angle':angle,'target':angle,'color':color,'name':name,'trail':[{'x':x-i*5*math.cos(angle),'y':y-i*5*math.sin(angle)} for i in range(30)],'length':145.,'score':0,'alive':True,'inventory':[],'effects':{**{k:0 for k in TYPES if k not in ('grow','bomb')},'reverse':0},'deadReason':'','boosting':False,'speed':160,'survival':0.,'viewW':1100,'viewH':850,'invVersion':0,'worldNext':0.,'lastRequest':None,'bombPulse':0}
-def new_room():return {'players':{},'foods':[food() for _ in range(680)],'items':[item() for _ in range(35)],'last':time.monotonic()}
+ return {'x':x,'y':y,'angle':angle,'target':angle,'color':color,'name':name,'trail':[{'x':x-i*5*math.cos(angle),'y':y-i*5*math.sin(angle)} for i in range(30)],'length':145.,'score':0,'alive':True,'inventory':[],'effects':{**{k:0 for k in TYPES if k not in ('grow','bomb','missile','slow')},'reverse':0,'frozen':0},'deadReason':'','boosting':False,'speed':160,'survival':0.,'viewW':1100,'viewH':850,'invVersion':0,'worldNext':0.,'lastRequest':None,'bombPulse':0,'foodEaten':0}
+def trim_trail(p):
+ distance=0
+ for i in range(1,len(p['trail'])):
+  a,b=p['trail'][i-1:i+1];d=math.hypot(a['x']-b['x'],a['y']-b['y']);distance+=d
+  if distance>p['length']:
+   if d:b['x']+=(a['x']-b['x'])*(distance-p['length'])/d;b['y']+=(a['y']-b['y'])*(distance-p['length'])/d
+   del p['trail'][i+1:];break
+def new_room():return {'players':{},'foods':[food() for _ in range(680)],'items':[item() for _ in range(35)],'last':time.monotonic(),'missiles':[],'bursts':[]}
 def project(p,a,b):
  dx=b['x']-a['x'];dy=b['y']-a['y'];d=dx*dx+dy*dy;t=max(0,min(1,((p['x']-a['x'])*dx+(p['y']-a['y'])*dy)/d)) if d else 0
  return (p['x']-a['x']-dx*t)**2+(p['y']-a['y']-dy*t)**2
@@ -22,12 +29,14 @@ def step(room,dt):
   p['survival']+=dt
   for k in p['effects']:p['effects'][k]=max(0,p['effects'][k]-dt)
   p['bombPulse']=max(0,p['bombPulse']-dt)
-  target=(math.pi-p['target'])%math.tau if p['effects']['reverse']>0 else p['target'];d=(target-p['angle']+math.pi)%math.tau-math.pi;p['angle']+=max(-4.5*dt,min(4.5*dt,d));slow=any(q is not p and q['alive'] and q['effects']['slow']>0 and dist2(p,q)<=300**2 for q in players.values())
-  speed=160*(1.55 if p['effects']['speed'] else 1)*(.55 if slow else 1);p['motionSpeed']=speed;p['x']+=math.cos(p['angle'])*speed*dt;p['y']+=math.sin(p['angle'])*speed*dt;p['boosting']=p['effects']['speed']>0
-  p['trail'].insert(0,{'x':p['x'],'y':p['y']});length=0
-  for j in range(1,len(p['trail'])):
-   a,b=p['trail'][j-1:j+1];length+=math.hypot(a['x']-b['x'],a['y']-b['y'])
-   if length>p['length']:del p['trail'][j+1:];break
+  target=(math.pi-p['target'])%math.tau if p['effects']['reverse']>0 else p['target'];d=(target-p['angle']+math.pi)%math.tau-math.pi
+  if not p['effects']['frozen']:p['angle']+=max(-4.5*dt,min(4.5*dt,d))
+  speed=0 if p['effects']['frozen'] else 160*(1.55 if p['effects']['speed'] else 1);p['motionSpeed']=speed;p['x']+=math.cos(p['angle'])*speed*dt;p['y']+=math.sin(p['angle'])*speed*dt;p['boosting']=p['effects']['speed']>0
+  if speed>0:
+   p['trail'].insert(0,{'x':p['x'],'y':p['y']});length=0
+   for j in range(1,len(p['trail'])):
+    a,b=p['trail'][j-1:j+1];length+=math.hypot(a['x']-b['x'],a['y']-b['y'])
+    if length>p['length']:del p['trail'][j+1:];break
   if p['x']<14 or p['y']<14 or p['x']>WORLD-14 or p['y']>WORLD-14:p['alive']=False;p['deadReason']='wall';continue
   remaining=[];magnet=p['effects']['magnet']>0
   for f in foods:
@@ -35,12 +44,37 @@ def step(room,dt):
    if magnet and 1<d2<145**2:
     d=math.sqrt(d2);move=min(d,260*dt);f['x']+=dx/d*move;f['y']+=dy/d*move;dx=p['x']-f['x'];dy=p['y']-f['y'];d2=dx*dx+dy*dy
    if d2<(radius(p)+5+f['r'])**2:
-    before=p['score']//100;p['score']+=f['value']*10*(2 if p['effects']['double'] else 1);p['length']+=f['value']*4.5+22*(p['score']//100-before)
+    p['foodEaten']+=1;before=p['score']//100;p['score']+=f['value']*10*(2 if p['effects']['double'] else 1);p['length']+=f['value']*4.5+22*(p['score']//100-before)
    else:remaining.append(f)
   foods[:]=remaining
   if len(p['inventory'])<2:
    for it in items[:]:
     if dist2(p,it)<(radius(p)+17)**2:p['inventory'].append(it['type']);p['invVersion']+=1;items.remove(it);break
+ # Missiles are simulated on the server; collision checks sample the swept path.
+ room['bursts'][:]=[dict(e,life=e['life']-dt) for e in room['bursts'] if e['life']>dt]
+ active=[]
+ missile_bounds={}
+ if room['missiles']:
+  for ident,q in players.items():
+   if q['alive'] and q['trail']:
+    xs=[v['x'] for v in q['trail']];ys=[v['y'] for v in q['trail']];missile_bounds[ident]=(min(xs),max(xs),min(ys),max(ys))
+ for m in room['missiles']:
+  ox,oy=m['x'],m['y'];m['x']+=math.cos(m['angle'])*520*dt;m['y']+=math.sin(m['angle'])*520*dt;m['life']-=dt;hit=None
+  samples=max(1,math.ceil(math.hypot(m['x']-ox,m['y']-oy)/8))
+  for j in range(1,samples+1):
+   point={'x':ox+(m['x']-ox)*j/samples,'y':oy+(m['y']-oy)*j/samples}
+   for ident,q in players.items():
+    if ident==m['owner'] or not q['alive'] or q['effects']['ghost'] or ident not in missile_bounds:continue
+    r=radius(q)+6;x0,x1,y0,y1=missile_bounds[ident]
+    if point['x']<x0-r or point['x']>x1+r or point['y']<y0-r or point['y']>y1+r:continue
+    if dist2(point,q)<r*r or any(project(point,q['trail'][i-1],q['trail'][i])<r*r for i in range(1,len(q['trail']))):hit=q;break
+   if hit:break
+  if hit:
+   if not hit['effects']['shield']:
+    hit['score']=0;hit['length']=145.;trim_trail(hit)
+   room['bursts'].append({'type':'explosion','x':point['x'],'y':point['y'],'life':.6})
+  elif m['life']>0 and 0<m['x']<WORLD and 0<m['y']<WORLD:active.append(m)
+ room['missiles'][:]=active
  bounds={}
  for q in players.values():
   if q['alive'] and q['trail']:
@@ -70,7 +104,7 @@ async def broadcast_loop(app):
    ordered=sorted(room['players'].items(),key=lambda z:z[1]['score'],reverse=True)
    players=[]
    for pid,p in ordered:
-    wire={k:v for k,v in p.items() if k not in ('target','effects','inventory','dropped','deadReason','viewW','viewH','trail','invVersion','worldNext','lastRequest')}
+    wire={k:v for k,v in p.items() if k not in ('target','effects','inventory','dropped','deadReason','viewW','viewH','trail','invVersion','worldNext','lastRequest','foodEaten')}
     wire['visualEffects']={k:round(v,1) for k,v in p['effects'].items() if v>0};wire['ghost']=p['effects']['ghost']>0;wire['shrink']=p['effects']['shrink']>0;wire['id']=pid;wire['x']=round(p['x'],1);wire['y']=round(p['y'],1);wire['angle']=round(p['angle'],3)
     trail=p['trail'];stride=max(1,math.ceil(len(trail)/160));sample=trail[::stride]
     if sample and sample[-1] is not trail[-1]:sample.append(trail[-1])
@@ -81,7 +115,7 @@ async def broadcast_loop(app):
    for pid,p in list(room['players'].items()):
     ws=app['sockets'].get(pid)
     if not ws or ws.closed:continue
-    msg={'type':'state','players':players,'inventory':list(p['inventory']),'invVersion':p['invVersion'],'effects':dict(p['effects']),'alive':p['alive'],'elapsed':p['survival'],'reason':p['deadReason'],'rank':next((i+1 for i,(x,_) in enumerate(ordered) if x==pid),1)}
+    msg={'type':'state','players':players,'inventory':list(p['inventory']),'invVersion':p['invVersion'],'effects':dict(p['effects']),'alive':p['alive'],'elapsed':p['survival'],'reason':p['deadReason'],'foodEaten':p['foodEaten'],'missiles':room['missiles'],'bursts':room['bursts'],'rank':next((i+1 for i,(x,_) in enumerate(ordered) if x==pid),1)}
     if p['worldNext']<=now:
      half_w=max(400,min(2200,p['viewW']/2+260));half_h=max(400,min(2200,p['viewH']/2+260))
      nearby=lambda obj:abs(obj['x']-p['x'])<half_w and abs(obj['y']-p['y'])<half_h
@@ -125,6 +159,12 @@ async def socket(request):
     if ok:
      k=inv.pop(idx);p['invVersion']+=1
      if k=='grow':p['length']+=110
+     elif k=='slow':
+      room['bursts'].append({'type':'ice','x':p['x'],'y':p['y'],'life':.7})
+      for other in room['players'].values():
+       if other is not p and other['alive'] and not other['effects']['shield'] and not other['effects']['ghost'] and dist2(p,other)<=300**2:other['effects']['frozen']=3
+     elif k=='missile':
+      room['missiles'].append({'owner':pid,'x':p['x']+math.cos(p['angle'])*25,'y':p['y']+math.sin(p['angle'])*25,'angle':p['angle'],'life':3.})
      elif k=='bomb':
       p['bombPulse']=.65
       for other in room['players'].values():
