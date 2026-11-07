@@ -2,15 +2,15 @@ import asyncio, itertools, json, math, os, random, re, secrets, time
 from aiohttp import web, WSMsgType
 WORLD=3400; TICK=.05; rooms={}; FOOD_IDS=itertools.count(1)
 COLORS=['#60e8cd','#ff81b0','#ac83ff','#5cbcff','#ffda5f','#ffa162','#ec80ff','#70ed87','#ff6d76','#58dce9','#f4a3ce','#98a7ff']
-TYPES={'shield':5,'magnet':7,'speed':4,'slow':5,'double':8,'grow':0}
+TYPES={'shield':5,'magnet':7,'speed':4,'slow':5,'double':8,'grow':0,'ghost':4,'shrink':6}
 def food(x=None,y=None):
  v=random.choices([1,2,3],[70,24,6])[0];return {'id':next(FOOD_IDS),'x':x if x is not None else random.uniform(30,WORLD-30),'y':y if y is not None else random.uniform(30,WORLD-30),'value':v,'r':{1:3.7,2:5,3:7.1}[v],'color':random.choice(COLORS),'phase':random.random()*6.28}
 def item(x=None,y=None):return {'x':x if x is not None else random.uniform(50,WORLD-50),'y':y if y is not None else random.uniform(50,WORLD-50),'type':random.choice(list(TYPES))}
 def dist2(a,b):return (a['x']-b['x'])**2+(a['y']-b['y'])**2
-def radius(p):return 8+min(10,(p['score']//100)*.6)
+def radius(p):return (8+min(10,(p['score']//100)*.6))*(.65 if p['effects'].get('shrink',0)>0 else 1)
 def make_player(name,color):
  x=random.uniform(500,WORLD-500);y=random.uniform(500,WORLD-500);angle=math.atan2(WORLD/2-y,WORLD/2-x)+random.uniform(-.65,.65)
- return {'x':x,'y':y,'angle':angle,'target':angle,'color':color,'name':name,'trail':[{'x':x-i*5*math.cos(angle),'y':y-i*5*math.sin(angle)} for i in range(30)],'length':145.,'score':0,'alive':True,'inventory':[],'effects':{k:0 for k in TYPES if k!='grow'},'deadReason':'','boosting':False,'speed':160,'survival':0.,'viewW':1100,'viewH':850,'invVersion':0,'worldNext':0.,'lastRequest':None}
+ return {'x':x,'y':y,'angle':angle,'target':angle,'color':color,'name':name,'trail':[{'x':x-i*5*math.cos(angle),'y':y-i*5*math.sin(angle)} for i in range(30)],'length':145.,'score':0,'alive':True,'inventory':[],'effects':{k:0 for k in TYPES if k!='grow'},'deadReason':'','boosting':False,'speed':160,'survival':0.,'viewW':1100,'viewH':850,'invVersion':0,'worldNext':0.,'lastRequest':None,'fashion':'none'}
 def new_room():return {'players':{},'foods':[food() for _ in range(680)],'items':[item() for _ in range(35)],'last':time.monotonic()}
 def project(p,a,b):
  dx=b['x']-a['x'];dy=b['y']-a['y'];d=dx*dx+dy*dy;t=max(0,min(1,((p['x']-a['x'])*dx+(p['y']-a['y'])*dy)/d)) if d else 0
@@ -45,9 +45,9 @@ def step(room,dt):
   if q['alive'] and q['trail']:
    xs=[v['x'] for v in q['trail']];ys=[v['y'] for v in q['trail']];bounds[id(q)]=(min(xs),max(xs),min(ys),max(ys))
  for p in list(players.values()):
-  if not p['alive'] or p['effects']['shield']:continue
+  if not p['alive'] or p['effects']['shield'] or p['effects']['ghost']:continue
   for q in list(players.values()):
-   if p is q or not q['alive'] or id(q) not in bounds:continue
+   if p is q or not q['alive'] or q['effects']['ghost'] or id(q) not in bounds:continue
    x0,x1,y0,y1=bounds[id(q)];r=radius(p)+radius(q)
    if p['x']<x0-r or p['x']>x1+r or p['y']<y0-r or p['y']>y1+r:continue
    if any(project(p,q['trail'][i-1],q['trail'][i])<(radius(p)+radius(q))**2 for i in range(1,len(q['trail']))):p['alive']=False;p['deadReason']='worm';break
@@ -70,7 +70,7 @@ async def broadcast_loop(app):
    players=[]
    for pid,p in ordered:
     wire={k:v for k,v in p.items() if k not in ('target','effects','inventory','dropped','deadReason','viewW','viewH','trail','invVersion','worldNext','lastRequest')}
-    wire['id']=pid;wire['x']=round(p['x'],1);wire['y']=round(p['y'],1);wire['angle']=round(p['angle'],3)
+    wire['ghost']=p['effects']['ghost']>0;wire['shrink']=p['effects']['shrink']>0;wire['id']=pid;wire['x']=round(p['x'],1);wire['y']=round(p['y'],1);wire['angle']=round(p['angle'],3)
     trail=p['trail'];stride=max(1,math.ceil(len(trail)/160));sample=trail[::stride]
     if sample and sample[-1] is not trail[-1]:sample.append(trail[-1])
     wire['trail']=[{'x':round(pt['x'],1),'y':round(pt['y'],1)} for pt in sample];players.append(wire)
@@ -101,7 +101,7 @@ async def socket(request):
  ws=web.WebSocketResponse(heartbeat=20,max_msg_size=2048);await ws.prepare(request);room=rooms.get(code)
  if room is None:room=rooms[code]=new_room()
  if len(room['players'])>=8:await ws.send_json({'type':'error','message':'방이 가득 찼어요. 최대 8명까지 참여할 수 있어요.'});await ws.close();return ws
- pid=secrets.token_urlsafe(12);p=make_player(name,color if color in COLORS else COLORS[0]);room['players'][pid]=p;room['last']=time.monotonic();request.app['sockets'][pid]=ws
+ pid=secrets.token_urlsafe(12);p=make_player(name,color if color in COLORS else COLORS[0]);p['fashion']=request.query.get('fashion','none') if request.query.get('fashion','none') in ('none','hat','pirate','wizard','halo','horns','glasses','headphones','flower','ribbon') else 'none';room['players'][pid]=p;room['last']=time.monotonic();request.app['sockets'][pid]=ws
  await ws.send_json({'type':'welcome','id':pid,'room':code})
  queue=asyncio.Queue(maxsize=1);request.app['queues'][pid]=queue;sender=asyncio.create_task(send_states(ws,queue))
  try:
